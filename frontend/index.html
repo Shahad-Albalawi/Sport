@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Sports Movement Analysis</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>AI Sports Coach</h1>
+    <p class="subtitle">Real-time pose overlay • Per-movement scoring (0–10) • Errors, strengths, improvements • PDF Report</p>
+
+    <div class="step-section">
+      <h2 id="sportHeading">1. Select Sport</h2>
+      <select id="sportSelect" aria-labelledby="sportHeading" aria-busy="false" aria-describedby="sportLoading">
+        <option value="">-- Choose sport or Auto Detect --</option>
+      </select>
+      <span id="sportLoading" class="loading-hint" aria-live="polite"></span>
+    </div>
+
+    <div class="step-section">
+      <h2>2. Video Source</h2>
+      <div class="controls">
+        <label><input type="radio" name="source" value="upload" checked> Upload Video</label>
+        <label><input type="radio" name="source" value="camera"> Use Camera</label>
+      </div>
+      <div class="upload-zone" id="uploadZone" role="button" tabindex="0" aria-label="Upload video - click or drag file">
+        <input type="file" id="videoFile" accept="video/*" aria-hidden="true">
+        <span class="upload-text" id="uploadText">Click or drag video here</span>
+        <span id="uploadLoading" class="loading-hint" aria-live="polite"></span>
+      </div>
+    </div>
+
+    <div class="step-section">
+      <h2>3. Analyze</h2>
+      <button id="startBtn" disabled aria-busy="false" aria-label="Start video analysis">Start Analysis</button>
+      <button id="stopBtn" disabled aria-label="Stop analysis">Stop</button>
+    </div>
+
+    <div class="progress-section hidden" id="progressSection">
+      <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+      <p id="progressText">Processing...</p>
+    </div>
+
+    <div class="video-area" id="videoArea">
+      <canvas id="overlayCanvas"></canvas>
+      <div id="videoPlaceholder">Live overlay will appear here during analysis</div>
+      <div class="live-feedback hidden" id="liveFeedbackPanel">
+        <div class="feedback-row"><strong>Movement:</strong> <span id="liveMovement">-</span></div>
+        <div class="feedback-row"><strong>Score:</strong> <span id="liveScore">-/10</span></div>
+        <div class="feedback-row"><strong>Errors:</strong> <span id="liveErrors">-</span></div>
+        <div class="feedback-row"><strong>Strengths:</strong> <span id="liveStrengths">-</span></div>
+        <div class="feedback-row"><strong>Improvement:</strong> <span id="liveImprovement">-</span></div>
+        <div class="feedback-row"><strong>Sport Objects:</strong> <span id="liveObjects">-</span></div>
+      </div>
+    </div>
+
+    <div id="resultSection" class="hidden">
+      <h2>Analysis Complete</h2>
+      <div class="summary-box">
+        <p><strong>Sport:</strong> <span id="sportResult">-</span></p>
+        <p><strong>Overall Score:</strong> <span id="scoreResult">-</span> / 10</p>
+        <p><strong>Per-Movement Scores:</strong> <span id="movementsResult">-</span></p>
+        <p><strong>Errors / Incorrects:</strong> <span id="errorsResult">-</span></p>
+        <p><strong>Strengths:</strong> <span id="strengthsResult">-</span></p>
+        <p><strong>Improvements:</strong> <span id="improvementsResult">See PDF report</span></p>
+      </div>
+      <div class="export-buttons">
+        <button id="downloadPdf">Download PDF</button>
+        <button id="downloadVideo">Download Video</button>
+        <button id="downloadCsv">CSV</button>
+        <button id="downloadJson">JSON</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

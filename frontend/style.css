@@ -1,0 +1,387 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  background: #0f0f12;
+  color: #e0e0e0;
+  min-height: 100vh;
+  padding: 1.5rem;
+}
+
+.container {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+@media (max-width: 600px) {
+  body { padding: 0.75rem; }
+  .container { max-width: 100%; }
+  .controls { flex-direction: column; gap: 0.75rem; }
+  .export-buttons { flex-wrap: wrap; }
+}
+
+h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+  color: #fff;
+}
+
+.subtitle {
+  font-size: 0.9rem;
+  color: #888;
+  margin-bottom: 1.5rem;
+}
+
+.step-section {
+  margin-bottom: 1.5rem;
+}
+
+.step-section h2 {
+  font-size: 0.95rem;
+  color: #aaa;
+  margin-bottom: 0.5rem;
+}
+
+#sportSelect {
+  width: 100%;
+  max-width: 320px;
+  padding: 0.6rem 0.8rem;
+  font-size: 0.9rem;
+  border-radius: 6px;
+  border: 1px solid #444;
+  background: #1a1a1f;
+  color: #e0e0e0;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.loading-hint {
+  display: block;
+  font-size: 0.8rem;
+  color: #6ea8fe;
+  margin-top: 0.25rem;
+}
+
+#downloadPdf {
+  background: #1a7f37;
+  color: #fff;
+}
+
+#downloadPdf:hover:not(:disabled) {
+  background: #218838;
+}
+
+.export-buttons {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+
+.export-buttons button {
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  border: none;
+  background: #2a2a30;
+  color: #e0e0e0;
+  transition: background 0.2s;
+}
+
+.export-buttons button:hover {
+  background: #3a3a42;
+}
+
+#resultSection p {
+  margin-bottom: 0.5rem;
+}
+
+.controls {
+  display: flex;
+  gap: 2rem;
+  margin-bottom: 1rem;
+}
+
+.controls label {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.upload-zone {
+  border: 2px dashed #444;
+  border-radius: 8px;
+  padding: 2rem;
+  text-align: center;
+  margin-bottom: 1rem;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+.upload-zone:hover {
+  border-color: #1a7f37;
+  background: rgba(26, 127, 55, 0.08);
+}
+.upload-zone.has-file {
+  border-color: #1a7f37;
+  background: rgba(26, 127, 55, 0.12);
+}
+.upload-zone input[type="file"] {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+}
+.upload-zone {
+  position: relative;
+}
+.upload-text {
+  font-size: 0.9rem;
+  color: #999;
+}
+
+.buttons {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+button {
+  padding: 0.6rem 1.2rem;
+  font-size: 0.9rem;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  background: #2a2a32;
+  color: #e0e0e0;
+}
+
+button:hover:not(:disabled) {
+  background: #3a3a44;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+#startBtn {
+  background: #1a7f37;
+  color: #fff;
+}
+
+#startBtn:hover:not(:disabled) {
+  background: #218838;
+}
+
+#stopBtn {
+  background: #c0392b;
+  color: #fff;
+}
+
+#stopBtn:hover:not(:disabled) {
+  background: #e74c3c;
+}
+
+.video-area {
+  position: relative;
+  background: #1a1a1f;
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 1rem;
+  min-height: 320px;
+}
+
+#videoFeed {
+  width: 100%;
+  display: block;
+}
+
+#overlayCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: auto;
+  display: none;
+}
+.video-area.live #overlayCanvas {
+  display: block;
+  position: relative;
+}
+.video-area.live #videoPlaceholder {
+  display: none;
+}
+
+#videoPlaceholder {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #666;
+  font-size: 0.9rem;
+  text-align: center;
+  padding: 1rem;
+}
+
+.progress-section {
+  margin-bottom: 1rem;
+}
+.progress-bar {
+  height: 8px;
+  background: #2a2a32;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 0.5rem;
+}
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #1a7f37, #28a745);
+  width: 0%;
+  transition: width 0.2s;
+}
+.progress-section p {
+  font-size: 0.85rem;
+  color: #888;
+}
+
+.live-feedback {
+  background: rgba(0,0,0,0.85);
+  padding: 0.75rem 1rem;
+  margin-top: 0.5rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+.live-feedback.hidden {
+  display: none;
+}
+.feedback-row {
+  margin-bottom: 0.25rem;
+}
+.feedback-row strong {
+  color: #888;
+  margin-right: 0.5rem;
+}
+#liveErrors { color: #f88; }
+#liveStrengths { color: #8f8; }
+#liveImprovement { color: #ffa; }
+#liveObjects { color: #8af; }
+
+.summary-box {
+  background: #1a1a1f;
+  padding: 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+.summary-box p {
+  margin-bottom: 0.5rem;
+}
+.export-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.export-buttons button {
+  padding: 0.5rem 1rem;
+}
+.export-buttons #downloadPdf {
+  background: #1a7f37;
+  color: #fff;
+}
+
+.step-section .controls + .upload-zone {
+  margin-top: 0.5rem;
+}
+.step-section button {
+  margin-right: 0.5rem;
+}
+
+.video-area.has-video #videoPlaceholder {
+  display: none;
+}
+
+.overlay-info {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  font-size: 0.75rem;
+  color: #aaa;
+  display: flex;
+  gap: 1rem;
+}
+
+.results-panel {
+  background: #1a1a1f;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.results-panel h3, .export h3 {
+  font-size: 0.85rem;
+  margin-bottom: 0.5rem;
+  color: #999;
+}
+
+#minimalResults p {
+  font-size: 0.9rem;
+  margin-bottom: 0.25rem;
+}
+
+.export {
+  margin-top: 1rem;
+}
+
+.export button {
+  margin-right: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+/* Responsive - mobile */
+@media (max-width: 600px) {
+  body {
+    padding: 0.75rem;
+  }
+  .container {
+    max-width: 100%;
+  }
+  h1 {
+    font-size: 1.25rem;
+  }
+  .controls {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .upload-zone {
+    padding: 1.25rem;
+  }
+  .buttons {
+    flex-wrap: wrap;
+  }
+  button {
+    flex: 1 1 45%;
+    min-width: 120px;
+  }
+  .video-area {
+    min-height: 220px;
+  }
+  .results-panel {
+    padding: 0.75rem;
+  }
+  #minimalResults p {
+    font-size: 0.85rem;
+    word-break: break-word;
+  }
+  .export button {
+    width: 100%;
+    margin-bottom: 0.5rem;
+  }
+}
