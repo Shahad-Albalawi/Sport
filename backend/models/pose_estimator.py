@@ -93,18 +93,23 @@ class PoseEstimator:
         self._frame_timestamp_ms = 0
 
     def process_frame(
-        self, frame: np.ndarray
+        self,
+        frame: np.ndarray,
+        timestamp_ms: Optional[int] = None,
     ) -> Tuple[Optional[object], Dict[str, Tuple[float, float, float]]]:
         """
         Process a single frame and return landmarks.
+        timestamp_ms: optional; if provided, use it and do not advance internal timestamp (for hybrid Lite+Heavy same-frame).
         Returns (result, landmarks_dict) where landmarks_dict maps name -> (x, y, z).
         """
+        ts = timestamp_ms if timestamp_ms is not None else self._frame_timestamp_ms
+        if timestamp_ms is None:
+            self._frame_timestamp_ms += 33  # ~30fps
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         if not rgb.flags["C_CONTIGUOUS"]:
             rgb = np.ascontiguousarray(rgb)
         mp_img = mp_image.Image(image_format=mp_image.ImageFormat.SRGB, data=rgb)
-        result = self.landmarker.detect_for_video(mp_img, self._frame_timestamp_ms)
-        self._frame_timestamp_ms += 33  # ~30fps
+        result = self.landmarker.detect_for_video(mp_img, ts)
 
         landmarks = {}
         if result.pose_landmarks and len(result.pose_landmarks) > 0:

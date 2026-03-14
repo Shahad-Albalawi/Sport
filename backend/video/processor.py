@@ -19,7 +19,10 @@ from typing import Callable, Dict, List, Optional, Any
 import cv2
 import numpy as np
 
-from backend.analysis.evaluator import MovementEvaluator, MovementEvaluation, RecommendationEngine
+from backend.analysis.evaluator import MovementEvaluator, MovementEvaluation, RecommendationEngine, INJURY_RISK_MAP
+from backend.analysis.biomechanics import get_coaching_for_error
+from backend.analysis.features import extract_frame_features, FrameFeatures
+from backend.sources import get_sources_for_sport
 from backend.utils import safe_get
 from backend.analysis.sport_profiles import (
     get_sport_profile,
@@ -30,11 +33,27 @@ from backend.analysis.sport_profiles import (
     get_equipment_validation_warnings,
     get_relevant_object_labels,
 )
-from backend.config import OUTPUT_DIR, FRAME_SKIP, POSE_SMOOTHING_ALPHA
+from backend.config import (
+    OUTPUT_DIR,
+    FRAME_SKIP,
+    POSE_SMOOTHING_ALPHA,
+    VIDEO_TARGET_HEIGHT,
+    FRAME_SKIP_FAST,
+    USE_VIDEO_STABILIZATION,
+    USE_HYBRID_POSE,
+    USE_DYNAMIC_FRAME_SKIP,
+    FAST_PROCESSING_MODE,
+    OBJECT_DETECTION_INTERVAL,
+    LIVE_CALLBACK_INTERVAL,
+    MAX_FRAMES_QUICK_PREVIEW,
+)
 from backend.models.movement_recognizer import MovementRecognizer
+from backend.video.preprocessor import VideoPreprocessor, PreprocessOptions
+from backend.video.key_frame_detector import KeyFrameDetector
 from backend.video.landmark_smoother import LandmarkSmoother
 from backend.models.object_tracker import ObjectTracker
 from backend.models.pose_estimator import PoseEstimator
+from backend.models.hybrid_pose import HybridPoseEstimator
 from backend.models.sport_inferencer import infer_sport
 from backend.video.overlay import VideoOverlay
 
@@ -84,6 +103,7 @@ class VideoProcessor:
         self._stop_requested = False
         sport = (sport or "unknown").lower().strip()
         use_auto_sport = sport == "auto"
+        t_start = time.perf_counter()
 
         cap = cv2.VideoCapture(source)
         if not cap.isOpened():
@@ -97,18 +117,36 @@ class VideoProcessor:
 
         overlay_name = f"overlay_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
         out_path = (output_path or str(self.output_dir / overlay_name)) if not skip_overlay else None
-        writer = None
-        if not skip_overlay and out_path:
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            writer = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
+        writer = None  # Lazy init when we know preprocessed frame size
 
-        pose_estimator = PoseEstimator()
+        pose_estimator = (
+            HybridPoseEstimator() if USE_HYBRID_POSE else PoseEstimator()
+        )
         landmark_smoother = LandmarkSmoother(alpha=POSE_SMOOTHING_ALPHA)
         movement_recognizer = MovementRecognizer()
         object_tracker = ObjectTracker()
         overlay = VideoOverlay(pose_estimator)
         rec_engine = RecommendationEngine()
-        evaluator = MovementEvaluator()
+        evaluator = MovementEvaluator(fps=fps)
+
+        # Video preprocessing: optimize for speed (short videos get fast mode regardless of resolution)
+        tf = total_frames or 0
+        # Fast mode: <90 sec OR high-res OR FAST_PROCESSING env → motion-based skip, no stabilization
+        use_fast_mode = FAST_PROCESSING_MODE or tf <= 2700 or tf > 900 or h > (VIDEO_TARGET_HEIGHT or 0)
+        preprocessor = VideoPreprocessor(PreprocessOptions(
+            target_height=VIDEO_TARGET_HEIGHT if (h > (VIDEO_TARGET_HEIGHT or 0)) else 0,
+            frame_skip=1,  # We handle skip via dynamic_skip
+            enable_stabilization=bool(USE_VIDEO_STABILIZATION) and not FAST_PROCESSING_MODE,
+            enable_crop=False,
+        ))
+        key_frame_detector = KeyFrameDetector()
+        prev_features_for_kf: Optional[FrameFeatures] = None
+        obj_detection_interval = max(1, int(OBJECT_DETECTION_INTERVAL or 1))
+        live_callback_interval = max(1, int(LIVE_CALLBACK_INTERVAL or 1))
+        if tf <= 900:
+            obj_detection_interval = max(obj_detection_interval, 10)  # YOLO every 10 frames for short clips
+            live_callback_interval = max(live_callback_interval, 3)   # Fewer SSE callbacks for short clips
+        last_objs: List[Any] = []
 
         # Per-movement score aggregation: movement_id -> list of frame scores (0-100)
         movement_scores: Dict[str, List[float]] = defaultdict(list)
@@ -123,8 +161,17 @@ class VideoProcessor:
         sport_votes: Dict[str, int] = {}  # Temporal smoothing: sport votes over recent frames
         frame_errors_last_30: List[str] = []  # For error logging every 30 frames
 
-        # For long videos (>30 sec), process every 2nd frame to reduce time
-        dynamic_skip = 2 if (total_frames or 0) > 900 else FRAME_SKIP
+        # Frame skip: higher = faster (short videos get aggressive skip)
+        if FAST_PROCESSING_MODE:
+            dynamic_skip = max(FRAME_SKIP_FAST, 3)  # Always use frame skip in fast mode
+        elif tf > 3600:
+            dynamic_skip = 5  # >2 min
+        elif tf > 1800:
+            dynamic_skip = 4  # >1 min
+        elif tf > 900:
+            dynamic_skip = max(FRAME_SKIP_FAST, 3)  # >30 sec: use fast skip
+        else:
+            dynamic_skip = FRAME_SKIP  # Short clips: every 3rd frame by default
         try:
             while cap.isOpened() and not self._stop_requested:
                 ret, frame = cap.read()
@@ -139,6 +186,8 @@ class VideoProcessor:
                             logger.debug("Progress callback failed: %s", e)
                     continue
                 t0 = time.perf_counter()
+                # Preprocess: resize to 720p, stabilize (for long/high-res videos)
+                frame = preprocessor.process(frame, frame_idx)
                 results, landmarks = None, {}
 
                 try:
@@ -155,10 +204,15 @@ class VideoProcessor:
                     logger.debug("Movement recognition failed: %s", e)
 
                 objs = []
-                try:
-                    objs = object_tracker.detect_objects(frame, frame_idx)
-                except Exception as e:
-                    logger.debug("Object detection failed frame %d: %s", frame_idx, e)
+                if frame_idx % obj_detection_interval == 0:
+                    try:
+                        objs = object_tracker.detect_objects(frame, frame_idx)  # Uses preprocessed frame
+                        last_objs = objs
+                    except Exception as e:
+                        logger.debug("Object detection failed frame %d: %s", frame_idx, e)
+                        last_objs = objs if objs else last_objs
+                else:
+                    objs = last_objs
                 obj_labels = [str(getattr(o, "label", "")) for o in objs]
                 # Auto sport inference (with hysteresis: require confidence >= 0.5)
                 inf_sport, inf_conf = infer_sport(movement, obj_labels)
@@ -188,6 +242,27 @@ class VideoProcessor:
                         "confidence": float(getattr(o, "confidence", 0)),
                         "bbox": bbox,
                     })
+
+                # Key-frame detection (Landing, Strike, Jump, Throw) for high-detail analysis
+                key_frame_event = None
+                if landmarks:
+                    features = extract_frame_features(landmarks, prev_features_for_kf, fps)
+                    prev_features_for_kf = features
+                    key_frame_event = key_frame_detector.detect(frame_idx, features)
+
+                    # Dynamic frame skip: high motion -> analyze more frames (skip 2), low motion -> skip 4-5
+                    if use_fast_mode and USE_DYNAMIC_FRAME_SKIP and features.angular_velocity:
+                        motion = sum(abs(v) for v in features.angular_velocity.values())
+                        dynamic_skip = 2 if motion > 50 else (3 if motion > 20 else max(FRAME_SKIP_FAST, 4))
+
+                    # Hybrid: refine key frames with Heavy model for better accuracy
+                    if key_frame_event and USE_HYBRID_POSE and hasattr(pose_estimator, "upgrade_to_heavy"):
+                        try:
+                            _, landmarks_heavy = pose_estimator.upgrade_to_heavy(frame)
+                            if landmarks_heavy:
+                                landmarks = landmark_smoother.smooth(landmarks_heavy)
+                        except Exception as e:
+                            logger.debug("Heavy upgrade failed frame %d: %s", frame_idx, e)
 
                 # Map generic movement to sport-specific
                 sport_movement = get_movement_by_generic(effective_sport, movement)
@@ -219,6 +294,11 @@ class VideoProcessor:
                         "movement": movement_id,
                         "errors": list(eval_result.errors or []),
                         "joint_scores": joint_dicts,
+                        "skill_metrics": getattr(eval_result, "skill_metrics", None) or {},
+                        "injury_risk_warnings": getattr(eval_result, "injury_risk_warnings", None) or [],
+                        "injury_risk_score": getattr(eval_result, "injury_risk_score", 0),
+                        "features_for_training": getattr(eval_result, "features_for_training", None) or {},
+                        "key_frame_event": key_frame_event.event_type if key_frame_event else None,
                     })
                     eval_result_for_overlay = eval_result
                 except Exception as e:
@@ -229,6 +309,8 @@ class VideoProcessor:
                         "movement": movement_id,
                         "errors": ["Evaluation failed"],
                         "joint_scores": [],
+                        "skill_metrics": {},
+                        "key_frame_event": None,
                     })
                     eval_result_for_overlay = MovementEvaluation(
                         frame_idx=frame_idx, overall_score=0.0, is_correct=False,
@@ -248,28 +330,34 @@ class VideoProcessor:
                     logger.debug("Recommendations failed frame %d: %s", frame_idx, e)
 
                 frame_out = frame
-                if writer and not skip_overlay:
-                    try:
-                        frame_out = overlay.draw_overlay(
-                            frame,
-                            sport=effective_sport,
-                            movement=movement_id,
-                            score=eval_result_for_overlay.overall_score,
-                            errors=eval_result_for_overlay.errors or [],
-                            recommendations=rec_names,
-                            objects=objs_filtered,
-                            frame_idx=frame_idx,
-                            processing_time_ms=(time.perf_counter() - t0) * 1000,
-                            draw_skeleton=True,
-                            results=results,
-                            total_frames=total_frames or 0,
-                        )
-                        writer.write(frame_out)
-                    except (cv2.error, TypeError, ValueError) as e:
-                        logger.warning("Overlay draw failed frame %d: %s", frame_idx, e)
-                        writer.write(frame)
+                if not skip_overlay and out_path:
+                    if writer is None:
+                        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                        writer = cv2.VideoWriter(out_path, fourcc, fps, (frame.shape[1], frame.shape[0]))
+                    if writer:
+                        try:
+                            frame_out = overlay.draw_overlay(
+                                frame,
+                                sport=effective_sport,
+                                movement=movement_id,
+                                score=eval_result_for_overlay.overall_score,
+                                errors=eval_result_for_overlay.errors or [],
+                                recommendations=rec_names,
+                                objects=objs_filtered,
+                                frame_idx=frame_idx,
+                                processing_time_ms=(time.perf_counter() - t0) * 1000,
+                                draw_skeleton=True,
+                                results=results,
+                                total_frames=total_frames or 0,
+                                joint_risk_levels=getattr(eval_result_for_overlay, "joint_risk_levels", None) or {},
+                                injury_risk_score=getattr(eval_result_for_overlay, "injury_risk_score", None),
+                            )
+                            writer.write(frame_out)
+                        except (cv2.error, TypeError, ValueError) as e:
+                            logger.warning("Overlay draw failed frame %d: %s", frame_idx, e)
+                            writer.write(frame)
 
-                if self.on_frame and not skip_overlay:
+                if self.on_frame and not skip_overlay and frame_idx % live_callback_interval == 0:
                     try:
                         _, jpeg = cv2.imencode(".jpg", frame_out)
                         if jpeg is not None:
@@ -304,6 +392,9 @@ class VideoProcessor:
                         logger.debug("Frame callback failed frame %d: %s", frame_idx, e)
 
                 frame_idx += 1
+                if MAX_FRAMES_QUICK_PREVIEW and frame_idx >= MAX_FRAMES_QUICK_PREVIEW:
+                    logger.info("Quick preview: stopping at %d frames", frame_idx)
+                    break
                 if frame_idx % 30 == 0:
                     logger.info("Processed %d frames", frame_idx)
                     if frame_errors_last_30:
@@ -375,6 +466,13 @@ class VideoProcessor:
                 })
 
         unique_errors = list(dict.fromkeys(all_errors))[:10]
+        # Aggregate injury-risk warnings from evaluations (poor mechanics -> injury risk)
+        all_injury_warnings: List[str] = []
+        for e in all_evaluations:
+            for w in (e.get("injury_risk_warnings") or []):
+                if w and w not in all_injury_warnings:
+                    all_injury_warnings.append(w)
+        unique_injury_warnings = all_injury_warnings[:5]
         object_labels_seen = list(dict.fromkeys(o.get("label", "") for o in all_objects if o.get("label")))
         equipment_warnings = get_equipment_validation_warnings(final_sport, object_labels_seen)
         unique_errors = equipment_warnings + unique_errors
@@ -396,10 +494,15 @@ class VideoProcessor:
         development_plan = rec_engine.get_development_plan(final_sport, avg_score, unique_errors)
 
         # Coaching feedback for each error (equipment-aware when objects detected)
-        coaching_feedback = []
+        # Deduplicate by feedback text — same tip for knee valgus (left/right) shown once
+        # Sources verified: ERROR_OFFICIAL_SOURCES in backend.sources (internal audit only)
+        coaching_feedback: List[Dict] = []
+        seen_feedback: set = set()
         for err in unique_errors:
             if "expected" in err.lower() and "not detected" in err.lower():
-                coaching_feedback.append({"error": err, "feedback": err})
+                if err not in seen_feedback:
+                    seen_feedback.add(err)
+                    coaching_feedback.append({"error": err, "feedback": err})
                 continue
             err_lower = err.lower()
             tip = None
@@ -409,17 +512,61 @@ class VideoProcessor:
                     break
             if not tip:
                 tip = get_coaching_feedback_with_equipment(final_sport, err, object_labels_seen)
-            coaching_feedback.append({"error": err, "feedback": tip})
+            # Deduplicate: same feedback for multiple errors (e.g. left/right knee) → show once
+            tip_key = (tip or "").strip()
+            if tip_key and tip_key not in seen_feedback:
+                seen_feedback.add(tip_key)
+                coaching_feedback.append({"error": err, "feedback": tip})
 
         sport_profile = get_sport_profile(final_sport)
 
+        # Collect injury-risk warnings from frame evaluations (poor mechanics detection)
+        injury_warnings_seen: set = set()
+        for ev in all_evaluations:
+            for w in ev.get("injury_risk_warnings", []) or []:
+                injury_warnings_seen.add(w)
+        injury_risk_warnings = list(injury_warnings_seen)[:5]
+
+        # Build injury_risk_with_corrections: each warning + explanation + how to fix
+        injury_risk_with_corrections: List[Dict[str, Any]] = []
+        for err_key, warning in INJURY_RISK_MAP.items():
+            if warning in injury_warnings_seen:
+                advice, injuries = get_coaching_for_error(err_key)
+                injury_risk_with_corrections.append({
+                    "warning": warning,
+                    "correction": advice,
+                    "possible_injuries": injuries[:3],
+                })
+
         # Inferred sport from movement+objects (for UI hint)
         final_inferred = inferred_sport if inferred_sport_conf >= 0.5 else None
+        # Aggregate injury risk score and confidence (from last evaluation)
+        last_eval = all_evaluations[-1] if all_evaluations else {}
+        injury_risk_score_agg = last_eval.get("injury_risk_score") or 0.0
+        confidence_agg = last_eval.get("confidence") or 1.0
+        possible_injuries_agg = list(dict.fromkeys(
+            i for e in all_evaluations for i in (e.get("possible_injuries") or [])
+        ))[:5]
+        if not injury_risk_score_agg and all_evaluations:
+            scores = [e.get("injury_risk_score") for e in all_evaluations if e.get("injury_risk_score")]
+            injury_risk_score_agg = float(np.mean(scores)) if scores else 0.0
+
+        processing_time_sec = round(time.perf_counter() - t_start, 2)
+        logger.info(
+            "Analysis complete: sport=%s frames=%d time=%.2fs fps=%.1f",
+            final_sport, frame_idx, processing_time_sec,
+            frame_idx / processing_time_sec if processing_time_sec > 0 else 0,
+        )
         summary = {
             "sport": final_sport,
             "sport_name": sport_profile.get("name_en", sport_profile.get("name", final_sport)),
             "sport_name_en": sport_profile.get("name_en", final_sport),
             "sport_was_auto": use_auto_sport,
+            "injury_risk_warnings": injury_risk_warnings,
+            "injury_risk_with_corrections": injury_risk_with_corrections,
+            "injury_risk_score": round(injury_risk_score_agg, 1),
+            "possible_injuries": possible_injuries_agg,
+            "confidence": round(confidence_agg, 2),
             "inferred_sport": final_inferred,
             "inferred_sport_confidence": round(inferred_sport_conf, 2) if final_inferred else None,
             "movements_analyzed": movements_analyzed,
@@ -451,5 +598,7 @@ class VideoProcessor:
             "frame_evaluations": all_evaluations,
             "output_video_path": out_path,
             "output_filename": Path(out_path).name if out_path else None,
+            "sources": get_sources_for_sport(final_sport),
+            "processing_time_sec": processing_time_sec,
         }
         return summary

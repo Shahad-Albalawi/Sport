@@ -27,8 +27,8 @@ def test_export_json():
     import json
     with open(path) as f:
         loaded = json.load(f)
-    assert loaded["sport"] == "football"
-    assert "name_ar" not in loaded.get("movements_analyzed", [{}])[0]
+    assert loaded.get("metadata", {}).get("sport") == "football"
+    assert "name_ar" not in (loaded.get("movements", [{}])[0] if loaded.get("movements") else {})
     path.unlink(missing_ok=True)
 
 

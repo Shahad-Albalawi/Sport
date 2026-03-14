@@ -284,6 +284,67 @@ button:disabled {
 .summary-box p {
   margin-bottom: 0.5rem;
 }
+.result-block {
+  margin-bottom: 0.75rem;
+}
+.result-block p {
+  margin-bottom: 0.25rem;
+}
+.result-list {
+  margin: 0 0 0 1.25rem;
+  padding: 0;
+  font-size: 0.9rem;
+}
+.result-list li {
+  margin-bottom: 0.25rem;
+  color: #c0c0c0;
+}
+.result-list li.error-msg {
+  color: #f88;
+}
+.result-list li.none {
+  color: #666;
+  font-style: italic;
+}
+
+/* Injury Risk block */
+.injury-risk-block {
+  margin-bottom: 0.75rem;
+  padding: 0.75rem;
+  border-radius: 6px;
+  border-left: 3px solid #555;
+}
+.injury-risk-block.risk-low {
+  border-left-color: #28a745;
+  background: rgba(40, 167, 69, 0.1);
+}
+.injury-risk-block.risk-moderate {
+  border-left-color: #ffc107;
+  background: rgba(255, 193, 7, 0.1);
+}
+.injury-risk-block.risk-high {
+  border-left-color: #dc3545;
+  background: rgba(220, 53, 69, 0.1);
+}
+.injury-risk-score {
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+.injury-risk-score.risk-low { color: #28a745; }
+.injury-risk-score.risk-moderate { color: #ffc107; }
+.injury-risk-score.risk-high { color: #dc3545; }
+.injury-details { margin-top: 0.5rem; }
+.injury-detail-card {
+  background: rgba(0,0,0,0.2);
+  border-left: 3px solid #ffc107;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.5rem;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+.injury-detail-card .warn { color: #ffc107; margin-bottom: 0.25rem; }
+.injury-detail-card .fix { color: #28a745; margin-top: 0.25rem; }
+.injury-detail-card .injuries { color: #888; font-size: 0.85rem; margin-top: 0.2rem; }
 .export-buttons {
   display: flex;
   flex-wrap: wrap;

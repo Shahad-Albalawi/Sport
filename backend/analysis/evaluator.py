@@ -22,6 +22,14 @@ from backend.analysis.sport_profiles import (
     get_sport_exercises,
     get_development_plan,
 )
+from backend.sources import get_sources_for_sport, format_source_short
+from backend.analysis.features import extract_frame_features, FrameFeatures
+from backend.analysis.biomechanics import (
+    check_angle_safety,
+    compute_injury_risk_score,
+    get_coaching_for_error,
+    ERROR_COACHING_MAP,
+)
 from backend.utils import safe_get
 
 logger = logging.getLogger("sport_analysis.evaluator")
@@ -35,6 +43,21 @@ class JointScore:
     score: float  # 0-100
     is_correct: bool
     feedback: str
+    risk_level: str = "safe"  # safe | moderate | high (for overlay coloring)
+
+
+# Error -> injury-risk warning mapping (biomechanics-based)
+INJURY_RISK_MAP: Dict[str, str] = {
+    "knee_valgus": "Potential ACL/MCL stress - knee collapsing inward during load",
+    "poor_hip_extension": "Lower back compensation risk - reduced hip drive",
+    "ankle_instability": "Ankle sprain risk - improve single-leg balance",
+    "unstable_landing": "Knee/ankle injury risk - practice soft landings with bent knees",
+    "shoulder_imbalance": "Rotator cuff strain risk - improve shoulder symmetry",
+    "limited_rotation": "Spine compensation risk - drive from hips and core",
+    "elbow_alignment": "Elbow strain - keep elbow in line with wrist",
+    "elbow_drop": "Body exposure - maintain guard position",
+    "core_instability": "Lower back stress - engage core during movement",
+}
 
 
 @dataclass
@@ -48,6 +71,20 @@ class MovementEvaluation:
     errors: List[str] = field(default_factory=list)
     sport: str = "unknown"
     movement: str = "unknown"
+    # Skill metrics: speed, power, balance, accuracy, timing (0-10 scale)
+    skill_metrics: Dict[str, float] = field(default_factory=dict)
+    # Injury-risk warnings when poor mechanics detected
+    injury_risk_warnings: List[str] = field(default_factory=list)
+    # Injury Risk Score 0-100 (100 = highest risk)
+    injury_risk_score: float = 0.0
+    # Joint name -> risk level for overlay (red/yellow): "safe" | "moderate" | "high"
+    joint_risk_levels: Dict[str, str] = field(default_factory=dict)
+    # Possible injuries from detected errors
+    possible_injuries: List[str] = field(default_factory=list)
+    # Confidence 0-1 for movement detection
+    confidence: float = 1.0
+    # Compact features for training data (angles, symmetry, stability)
+    features_for_training: Optional[Dict[str, Any]] = None
 
 
 def _get_ideal(sport: str, joint_type: str, movement: str = "") -> Tuple[float, float]:
@@ -94,8 +131,10 @@ def _get_ideal(sport: str, joint_type: str, movement: str = "") -> Tuple[float, 
 class MovementEvaluator:
     """Evaluate movement quality with sport-specific criteria."""
 
-    def __init__(self):
+    def __init__(self, fps: float = 30.0):
         self.history: List[Dict] = []
+        self._prev_features: Optional[FrameFeatures] = None
+        self.fps = fps
 
     def _angle_between_points(
         self,
@@ -213,6 +252,18 @@ class MovementEvaluator:
                 movement=movement,
             )
 
+        # Feature engineering: angles, symmetry, stability
+        features = extract_frame_features(landmarks, self._prev_features, self.fps)
+        self._prev_features = features
+
+        # Biomechanics: check safe ranges and populate joint_risk_levels
+        joint_risk_levels: Dict[str, str] = {}
+        for joint, angle in {**features.knee_angles, **features.hip_angles, **features.ankle_angles,
+                            **features.shoulder_angles, **features.elbow_angles}.items():
+            risk, _ = check_angle_safety(angle, joint, sport, movement)
+            if risk != "safe":
+                joint_risk_levels[joint] = risk
+
         l_hip = self._get_landmark(landmarks, "left_hip")
         l_knee = self._get_landmark(landmarks, "left_knee")
         l_ankle = self._get_landmark(landmarks, "left_ankle")
@@ -235,12 +286,14 @@ class MovementEvaluator:
                 if valgus_left or valgus_right:
                     score = min(score, 50)
                     errors.append(f"Knee valgus ({side}) - keep knees aligned over toes")
+                    joint_risk_levels[f"{side}_knee"] = "high"
                 joint_scores.append(
                     JointScore(
                         name=f"{side}_knee",
                         score=float(score),
                         is_correct=bool(score >= 70),
                         feedback=f"Knee angle: {angle:.0f}°" + (" ✓" if score >= 70 else " - needs improvement"),
+                        risk_level=joint_risk_levels.get(f"{side}_knee", "safe"),
                     )
                 )
                 scores_list.append(score)
@@ -354,8 +407,64 @@ class MovementEvaluator:
                 errors.append(fb)
             elif "Keep equipment" in fb and fb not in errors:
                 errors.append(fb)
+
+        # Skill metrics: speed, power, balance, accuracy, timing, alignment (0-10 scale)
+        balance_score = 0.0
+        if l_sh and r_sh and l_hip and r_hip:
+            sh_dy = abs(l_sh[1] - r_sh[1])
+            hip_dy = abs(l_hip[1] - r_hip[1])
+            balance_score = max(0, 100 - (sh_dy + hip_dy) * 400)
+        accuracy_score = min(100, 70 + eq_bonus * 6) if objects else 70.0
+        knee_align = next((j.score for j in joint_scores if "knee" in j.name.lower()), 70)
+        skill_metrics = {
+            "balance": round(balance_score / 10.0, 1),
+            "accuracy": round(accuracy_score / 10.0, 1),
+            "alignment": round(knee_align / 10.0, 1),
+            "timing": round(min(10, overall / 12), 1),  # Derived from form score
+            "power": round(min(10, overall / 11), 1),  # Placeholder - range of motion proxy
+        }
         threshold = 65 if is_key_movement else 70
         is_correct = bool(overall >= threshold and len(errors) <= 2)
+
+        # Derive injury-risk warnings from errors (for poor mechanics detection)
+        injury_warnings: List[str] = []
+        err_lower = " ".join(errors).lower()
+        for err_key, warning in INJURY_RISK_MAP.items():
+            if err_key.replace("_", " ") in err_lower or err_key in err_lower:
+                if warning not in injury_warnings:
+                    injury_warnings.append(warning)
+
+        # Add knee_angle_unsafe when outside safe range
+        for jname, ang in features.knee_angles.items():
+            risk, _ = check_angle_safety(ang, jname, sport, movement)
+            if risk == "high":
+                errors.append("Knee angle outside safe range (landing/load)")
+                joint_risk_levels[jname] = "high"
+
+        # Injury Risk Score 0-100
+        injury_risk_score = compute_injury_risk_score(errors, joint_risk_levels)
+
+        # Possible injuries from error-to-coaching map
+        possible_injuries: List[str] = []
+        for err in errors:
+            _, inj_list = get_coaching_for_error(err)
+            for i in inj_list:
+                if i not in possible_injuries:
+                    possible_injuries.append(i)
+
+        # Confidence: higher when symmetry and stability are good
+        confidence = (features.left_right_symmetry + features.stability_score) / 2.0
+
+        # Compact features for training/continuous improvement
+        features_for_training = {
+            "knee_angles": dict(features.knee_angles),
+            "hip_angles": dict(features.hip_angles),
+            "ankle_angles": dict(features.ankle_angles),
+            "shoulder_angles": dict(features.shoulder_angles),
+            "elbow_angles": dict(features.elbow_angles),
+            "symmetry": round(features.left_right_symmetry, 3),
+            "stability": round(features.stability_score, 3),
+        }
 
         return MovementEvaluation(
             frame_idx=frame_idx,
@@ -365,6 +474,13 @@ class MovementEvaluator:
             errors=list(dict.fromkeys(errors))[:6],
             sport=sport,
             movement=movement,
+            skill_metrics=skill_metrics,
+            injury_risk_warnings=injury_warnings[:5],
+            injury_risk_score=round(injury_risk_score, 1),
+            joint_risk_levels=joint_risk_levels,
+            possible_injuries=possible_injuries[:5],
+            confidence=round(confidence, 2),
+            features_for_training=features_for_training,
         )
 
 
@@ -373,7 +489,7 @@ class MovementEvaluator:
 
 @dataclass
 class CorrectiveExercise:
-    """A corrective exercise recommendation."""
+    """A corrective exercise recommendation with official source citation."""
 
     name: str
     description: str
@@ -381,24 +497,28 @@ class CorrectiveExercise:
     reps_sets: str
     difficulty: str
     sport_focus: str = ""
+    source: str = ""  # Official source citation (e.g. "NASM (National Academy of Sports Medicine)")
 
+
+# Default source for generic corrective exercises (NASM - evidence-based)
+_GENERIC_EXERCISE_SOURCE = "NASM Corrective Exercise (National Academy of Sports Medicine)"
 
 GENERIC_EXERCISES: Dict[str, List[CorrectiveExercise]] = {
     "knee": [
-        CorrectiveExercise("Wall sit", "Wall sit for quad strength", "knee", "3x30s", "beginner", ""),
-        CorrectiveExercise("Clam shells", "Hip rotation for glutes", "knee", "3x15 each", "beginner", ""),
+        CorrectiveExercise("Wall sit", "Wall sit for quad strength", "knee", "3x30s", "beginner", "", _GENERIC_EXERCISE_SOURCE),
+        CorrectiveExercise("Clam shells", "Hip rotation for glutes", "knee", "3x15 each", "beginner", "", _GENERIC_EXERCISE_SOURCE),
     ],
     "shoulder": [
-        CorrectiveExercise("Band pull-apart", "Posterior shoulder strength", "shoulder", "3x15", "beginner", ""),
+        CorrectiveExercise("Band pull-apart", "Posterior shoulder strength", "shoulder", "3x15", "beginner", "", _GENERIC_EXERCISE_SOURCE),
     ],
     "hip": [
-        CorrectiveExercise("Hip bridge", "Glute strength", "hip", "3x15", "beginner", ""),
+        CorrectiveExercise("Hip bridge", "Glute strength", "hip", "3x15", "beginner", "", _GENERIC_EXERCISE_SOURCE),
     ],
     "ankle": [
-        CorrectiveExercise("Calf raises", "Ankle stability", "ankle", "3x15", "beginner", ""),
+        CorrectiveExercise("Calf raises", "Ankle stability", "ankle", "3x15", "beginner", "", _GENERIC_EXERCISE_SOURCE),
     ],
     "core": [
-        CorrectiveExercise("Plank", "Core stability", "core", "3x30s", "beginner", ""),
+        CorrectiveExercise("Plank", "Core stability", "core", "3x30s", "beginner", "", _GENERIC_EXERCISE_SOURCE),
     ],
 }
 
@@ -406,8 +526,10 @@ GENERIC_EXERCISES: Dict[str, List[CorrectiveExercise]] = {
 def _exercise_from_profile(ex: dict, sport: str) -> CorrectiveExercise:
     """
     Build CorrectiveExercise from sport profile exercise dict.
-    Uses name, reason/description, target joint; defaults reps to 3x12.
+    Uses name, reason/description, target joint; source from sport federation.
     """
+    srcs = get_sources_for_sport(sport)
+    src_str = format_source_short(srcs[0]) if srcs else _GENERIC_EXERCISE_SOURCE
     return CorrectiveExercise(
         name=ex.get("name", ""),
         description=ex.get("reason", ex.get("description", "")),
@@ -415,6 +537,7 @@ def _exercise_from_profile(ex: dict, sport: str) -> CorrectiveExercise:
         reps_sets="3x12",
         difficulty="beginner",
         sport_focus=sport,
+        source=src_str,
     )
 
 

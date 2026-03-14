@@ -9,10 +9,13 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from backend.models.pose_estimator import PoseEstimator
+from backend.models.pose_estimator import PoseEstimator, LANDMARK_NAMES, POSE_CONNECTIONS
 from backend.models.object_tracker import TrackedObject
 
 logger = logging.getLogger("sport_analysis.overlay")
+
+# Risk colors (BGR): high=red, moderate=yellow, safe=green
+RISK_COLORS = {"high": (0, 0, 255), "moderate": (0, 255, 255), "safe": (0, 220, 100)}
 
 # Overlay layout constants (pixels)
 PANEL_HEIGHT_MAX = 200
@@ -47,17 +50,7 @@ def _angle_deg(
 class VideoOverlay:
     """Draw analysis results on video frames."""
 
-    LANDMARK_NAMES = [
-        "nose", "left_eye_inner", "left_eye", "left_eye_outer",
-        "right_eye_inner", "right_eye", "right_eye_outer",
-        "left_ear", "right_ear", "mouth_left", "mouth_right",
-        "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
-        "left_wrist", "right_wrist", "left_pinky", "right_pinky",
-        "left_index", "right_index", "left_thumb", "right_thumb",
-        "left_hip", "right_hip", "left_knee", "right_knee",
-        "left_ankle", "right_ankle", "left_heel", "right_heel",
-        "left_foot_index", "right_foot_index",
-    ]
+    LANDMARK_NAMES = LANDMARK_NAMES
 
     def __init__(self, pose_estimator: PoseEstimator):
         self.pose_estimator = pose_estimator
@@ -91,6 +84,58 @@ class VideoOverlay:
                     angles.append((label, a, (px, py)))
         return angles
 
+    # Landmark index -> name for risk-based coloring
+    _JOINT_INDEX_TO_NAME = {
+        11: "left_shoulder", 12: "right_shoulder",
+        13: "left_elbow", 14: "right_elbow",
+        15: "left_wrist", 16: "right_wrist",
+        23: "left_hip", 24: "right_hip",
+        25: "left_knee", 26: "right_knee",
+        27: "left_ankle", 28: "right_ankle",
+    }
+
+    # BGR colors: red=high risk, yellow=moderate, green=safe
+    _COLOR_HIGH = (0, 0, 255)
+    _COLOR_MODERATE = (0, 255, 255)
+    _COLOR_SAFE = (0, 200, 100)
+
+    def _draw_skeleton_with_risk(
+        self,
+        frame: np.ndarray,
+        results,
+        w: int,
+        h: int,
+        joint_risk_levels: Dict[str, str],
+    ) -> None:
+        """Draw skeleton with joints colored by risk (red/yellow/green)."""
+        if not results or not results.pose_landmarks or len(results.pose_landmarks) == 0:
+            return
+        lm = results.pose_landmarks[0]
+        pts = [(int(p.x * w), int(p.y * h)) for p in lm]
+
+        def color_for_index(i: int) -> Tuple[int, int, int]:
+            name = self._JOINT_INDEX_TO_NAME.get(i)
+            if name and name in joint_risk_levels:
+                level = joint_risk_levels[name]
+                if level == "high":
+                    return self._COLOR_HIGH
+                if level == "moderate":
+                    return self._COLOR_MODERATE
+            return self._COLOR_SAFE
+
+        # Draw connections (use color of more risky endpoint)
+        for i, j in POSE_CONNECTIONS:
+            if i < len(pts) and j < len(pts):
+                ci, cj = color_for_index(i), color_for_index(j)
+                col = self._COLOR_HIGH if (ci == self._COLOR_HIGH or cj == self._COLOR_HIGH) else (
+                    self._COLOR_MODERATE if (ci == self._COLOR_MODERATE or cj == self._COLOR_MODERATE) else self._COLOR_SAFE
+                )
+                cv2.line(frame, pts[i], pts[j], col, 3)
+        for i, p in enumerate(pts):
+            col = color_for_index(i)
+            cv2.circle(frame, p, 6, col, -1)
+            cv2.circle(frame, p, 6, (255, 255, 255), 1)
+
     def draw_overlay(
         self,
         frame: np.ndarray,
@@ -105,8 +150,10 @@ class VideoOverlay:
         draw_skeleton: bool = True,
         results: Optional[object] = None,
         total_frames: int = 0,
+        joint_risk_levels: Optional[Dict[str, str]] = None,
+        injury_risk_score: Optional[float] = None,
     ) -> np.ndarray:
-        """Draw all overlay elements: skeleton, landmarks, joint angles, progress bar."""
+        """Draw all overlay elements: skeleton, landmarks with risk colors (red/yellow), progress bar."""
         h, w = frame.shape[:2]
         overlay = frame.copy()
 
@@ -138,10 +185,15 @@ class VideoOverlay:
             cv2.rectangle(overlay, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (80, 80, 80), -1)
             cv2.rectangle(overlay, (bar_x, bar_y), (bar_x + int(bar_w * pct), bar_y + bar_h), (0, 200, 100), -1)
 
+        # Injury risk score (0-100) when available
+        if injury_risk_score is not None:
+            risk_color = (0, 100, 255) if injury_risk_score >= 50 else (0, 200, 255)  # red or yellow
+            cv2.putText(overlay, f"Injury Risk: {injury_risk_score:.0f}/100", (10, 175), cv2.FONT_HERSHEY_SIMPLEX, 0.5, risk_color, 1)
+
         cv2.putText(overlay, f"#{frame_idx}", (w - 80, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
         if draw_skeleton and results:
-            self.pose_estimator.draw_landmarks(overlay, results)
+            self._draw_skeleton_with_risk(overlay, results, w, h, joint_risk_levels or {})
 
             for label, angle, (px, py) in self._extract_joint_angles(results, w, h):
                 if 0 <= py < h and 0 <= px < w:

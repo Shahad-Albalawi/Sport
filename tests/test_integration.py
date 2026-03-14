@@ -56,7 +56,7 @@ def test_full_pipeline_with_overlay(test_video, tmp_path):
 
 
 def test_pipeline_exports_reports(test_video):
-    """Pipeline generates PDF, CSV, JSON reports."""
+    """Pipeline generates PDF, CSV, JSON reports under REPORTS_DIR/sport_folder/."""
     from backend.pipeline import AnalysisPipeline
     from backend.config import setup_logging, REPORTS_DIR
 
@@ -75,5 +75,7 @@ def test_pipeline_exports_reports(test_video):
     assert "pdf" in files
     assert "csv" in files
     assert "json" in files
-    for fname in files.values():
-        assert (REPORTS_DIR / fname).exists()
+    # Reports stored at REPORTS_DIR/Football/report_xxx.ext
+    for fpath in files.values():
+        full_path = REPORTS_DIR / fpath
+        assert full_path.exists(), f"Report not found: {full_path}"

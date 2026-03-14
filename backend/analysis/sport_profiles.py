@@ -520,8 +520,17 @@ def get_ideal_angle_fallback(sport: str, joint_type: str) -> Optional[Tuple[floa
 
 
 def get_sport_profile(sport: str) -> dict:
-    """Get profile for sport, fallback to unknown."""
+    """Get profile for sport. Uses modular analyzer when available, else legacy SPORT_PROFILES."""
     key = sport.lower().strip() if sport else "unknown"
+    if key == "soccer":
+        key = "football"  # soccer uses football profile
+    try:
+        from backend.sports.registry import get_analyzer
+        analyzer = get_analyzer(key)
+        if analyzer:
+            return analyzer.get_profile()
+    except ImportError:
+        pass
     return SPORT_PROFILES.get(key, SPORT_PROFILES["unknown"]).copy()
 
 

@@ -29,6 +29,8 @@ try:
 except ImportError:
     HAS_YOLO = False
 
+from backend.config import YOLO_MODEL
+
 
 @dataclass
 class TrackedObject:
@@ -63,8 +65,8 @@ class ObjectTracker:
         self._yolo = None
         if HAS_YOLO:
             try:
-                self._yolo = YOLO("yolov8s.pt")
-                logger.info("YOLO loaded for object detection (yolov8s - higher accuracy)")
+                self._yolo = YOLO(f"{YOLO_MODEL}.pt")
+                logger.info("YOLO loaded for object detection (%s)", YOLO_MODEL)
             except Exception as e:
                 logger.warning("YOLO init failed, using color detection: %s", e)
                 self._yolo = None

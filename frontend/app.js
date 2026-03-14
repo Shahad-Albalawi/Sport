@@ -29,9 +29,12 @@ const resultSection = document.getElementById('resultSection');
 const sportResult = document.getElementById('sportResult');
 const scoreResult = document.getElementById('scoreResult');
 const movementsResult = document.getElementById('movementsResult');
-const errorsResult = document.getElementById('errorsResult');
-const strengthsResult = document.getElementById('strengthsResult');
-const improvementsResult = document.getElementById('improvementsResult');
+const errorsList = document.getElementById('errorsList');
+const strengthsList = document.getElementById('strengthsList');
+const improvementsList = document.getElementById('improvementsList');
+const injuryRiskScore = document.getElementById('injuryRiskScore');
+const injuryRiskDetails = document.getElementById('injuryRiskDetails');
+const possibleInjuriesList = document.getElementById('possibleInjuriesList');
 
 // Load sports with loading state
 async function loadSports() {
@@ -117,6 +120,55 @@ function setProgress(pct) {
   progressFill.style.width = Math.min(100, pct || 0) + '%';
 }
 
+function renderResultSummary(r, isError = false) {
+  sportResult.textContent = isError ? 'Error' : (r.sport_name_en || r.sport_name || r.sport || '-') + (r.sport_was_auto ? ' (auto)' : '');
+  scoreResult.textContent = isError ? '-' : (r.overall_score != null ? r.overall_score : '-');
+  movementsResult.textContent = isError ? '-' : ((r.movements_analyzed || []).map(m => `${m.name_en || m.id}: ${m.score}/10`).join('; ') || '-');
+  if (isError) {
+    errorsList.innerHTML = '<li class="error-msg">' + (r.error || 'Analysis failed') + '</li>';
+    strengthsList.innerHTML = '';
+    improvementsList.innerHTML = '';
+    injuryRiskScore.textContent = '-';
+    if (injuryRiskDetails) injuryRiskDetails.innerHTML = '';
+    if (possibleInjuriesList) possibleInjuriesList.innerHTML = '';
+  } else {
+    const errs = r.errors || [];
+    errorsList.innerHTML = errs.length ? errs.map(e => '<li>' + e + '</li>').join('') : '<li class="none">None</li>';
+    const str = r.strengths || [];
+    strengthsList.innerHTML = str.length ? str.map(s => '<li>' + s + '</li>').join('') : '<li class="none">-</li>';
+    const imps = (r.coaching_feedback || []).map(c => c.feedback).filter(Boolean);
+    improvementsList.innerHTML = imps.length ? imps.map(i => '<li>' + i + '</li>').join('') : '<li class="none">See PDF report</li>';
+    // Injury Risk / مخاطر الإصابات
+    const score = r.injury_risk_score;
+    injuryRiskScore.className = 'injury-risk-score';
+    if (score != null && score >= 0) {
+      const label = score >= 50 ? 'High / عالي' : score >= 25 ? 'Moderate / متوسط' : 'Low / منخفض';
+      injuryRiskScore.textContent = `${score}/100 (${label})`;
+      if (score >= 50) injuryRiskScore.classList.add('risk-high');
+      else if (score >= 25) injuryRiskScore.classList.add('risk-moderate');
+      else injuryRiskScore.classList.add('risk-low');
+    } else {
+      injuryRiskScore.textContent = '-';
+    }
+    const details = r.injury_risk_with_corrections || [];
+    const warnings = r.injury_risk_warnings || [];
+    if (injuryRiskDetails) {
+      if (details.length) {
+        injuryRiskDetails.innerHTML = details.map(d => {
+          const inj = (d.possible_injuries || []).length ? '<br><small>إصابات محتملة: ' + d.possible_injuries.join(', ') + '</small>' : '';
+          return `<div class="injury-detail-card"><strong>⚠ ${d.warning}</strong><p class="correction">→ ${d.correction}</p>${inj}</div>`;
+        }).join('');
+      } else if (warnings.length) {
+        injuryRiskDetails.innerHTML = '<ul class="result-list">' + warnings.map(w => '<li class="warning">⚠ ' + w + '</li>').join('') + '</ul>';
+      } else {
+        injuryRiskDetails.innerHTML = '<p class="none">None</p>';
+      }
+    }
+    const possible = r.possible_injuries || [];
+    if (possibleInjuriesList) possibleInjuriesList.innerHTML = possible.length ? possible.map(i => '<li>• ' + i + '</li>').join('') : '<li class="none">None</li>';
+  }
+}
+
 function connectStream(jobId) {
   if (eventSource) eventSource.close();
   eventSource = new EventSource(`${API_BASE}/api/stream/${jobId}`);
@@ -137,18 +189,12 @@ function connectStream(jobId) {
         const res = data.result;
         if (res) {
           if (res.status === 'error') {
-            sportResult.textContent = 'Error';
-            errorsResult.textContent = res.error || 'Analysis failed';
+            renderResultSummary({ error: res.error || 'Analysis failed' }, true);
             resultSection.classList.remove('hidden');
           } else {
             const r = res.result || res;
             lastReport = r;
-            sportResult.textContent = (r.sport_name_en || r.sport_name || r.sport || '-') + (r.sport_was_auto ? ' (auto)' : '');
-            scoreResult.textContent = r.overall_score != null ? r.overall_score : '-';
-            movementsResult.textContent = (r.movements_analyzed || []).map(m => `${m.name_en || m.id}: ${m.score}/10`).join('; ') || '-';
-            errorsResult.textContent = (r.errors || []).length ? r.errors.join('; ') : 'None';
-            strengthsResult.textContent = (r.strengths || []).length ? r.strengths.join('; ') : '-';
-            improvementsResult.textContent = (r.coaching_feedback || []).length ? (r.coaching_feedback || []).map(c => c.feedback).slice(0, 3).join('; ') : 'See PDF report';
+            renderResultSummary(r);
             resultSection.classList.remove('hidden');
           }
         }
@@ -308,13 +354,7 @@ async function pollStatus(jobId) {
     progressSection.classList.add('hidden');
     resultSection.classList.remove('hidden');
     lastReport = data.result;
-    const r = data.result;
-    sportResult.textContent = (r.sport_name_en || r.sport_name || r.sport || '-') + (r.sport_was_auto ? ' (auto)' : '');
-    scoreResult.textContent = r.overall_score != null ? r.overall_score : '-';
-    movementsResult.textContent = (r.movements_analyzed || []).map(m => `${m.name_en || m.id}: ${m.score}/10`).join('; ') || '-';
-    errorsResult.textContent = (r.errors || []).length ? r.errors.join('; ') : 'None';
-    strengthsResult.textContent = (r.strengths || []).length ? r.strengths.join('; ') : '-';
-    improvementsResult.textContent = (r.coaching_feedback || []).length ? (r.coaching_feedback || []).map(c => c.feedback).slice(0, 3).join('; ') : 'See PDF report';
+    renderResultSummary(data.result);
     startBtn.disabled = false;
     startBtn.setAttribute('aria-busy', 'false');
     stopBtn.disabled = true;

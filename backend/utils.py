@@ -15,9 +15,14 @@ def to_json_safe(obj: Any) -> Any:
     """
     if obj is None:
         return None
-    # Numpy scalars (must come before native bool/int/float)
-    if isinstance(obj, np.bool_):
-        return bool(obj)
+    # Numpy scalars (int, float, bool): .item() for NumPy 1.x/2.x compatibility
+    if hasattr(obj, "item") and callable(getattr(obj, "item")):
+        try:
+            return to_json_safe(obj.item())  # 0-d arrays & scalars; multi-elem raises
+        except (ValueError, TypeError):
+            pass
+    if isinstance(obj, bool):
+        return obj
     if isinstance(obj, (np.integer, np.int8, np.int16, np.int32, np.int64)):
         return int(obj)
     if isinstance(obj, (np.floating, np.float16, np.float32, np.float64)):

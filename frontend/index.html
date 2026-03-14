@@ -62,9 +62,26 @@
         <p><strong>Sport:</strong> <span id="sportResult">-</span></p>
         <p><strong>Overall Score:</strong> <span id="scoreResult">-</span> / 10</p>
         <p><strong>Per-Movement Scores:</strong> <span id="movementsResult">-</span></p>
-        <p><strong>Errors / Incorrects:</strong> <span id="errorsResult">-</span></p>
-        <p><strong>Strengths:</strong> <span id="strengthsResult">-</span></p>
-        <p><strong>Improvements:</strong> <span id="improvementsResult">See PDF report</span></p>
+        <div class="result-block">
+          <p><strong>Errors / Incorrects:</strong></p>
+          <ul id="errorsList" class="result-list"></ul>
+        </div>
+        <div class="result-block">
+          <p><strong>Strengths:</strong></p>
+          <ul id="strengthsList" class="result-list"></ul>
+        </div>
+        <div class="result-block">
+          <p><strong>Improvements:</strong></p>
+          <ul id="improvementsList" class="result-list"></ul>
+        </div>
+        <div class="result-block injury-risk-block">
+          <p><strong>Injury Risk / مخاطر الإصابات:</strong></p>
+          <p id="injuryRiskScore" class="injury-risk-score">-</p>
+          <p><strong>Warnings & Corrections / تحذيرات وتصحيحات:</strong></p>
+          <div id="injuryRiskDetails" class="injury-details"></div>
+          <p class="fallback-label"><strong>Possible Injuries / إصابات محتملة:</strong></p>
+          <ul id="possibleInjuriesList" class="result-list"></ul>
+        </div>
       </div>
       <div class="export-buttons">
         <button id="downloadPdf">Download PDF</button>

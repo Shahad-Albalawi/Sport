@@ -19,7 +19,7 @@ from slowapi.errors import RateLimitExceeded
 
 from backend.config import (
     UPLOADS_DIR, OUTPUT_DIR, REPORTS_DIR, MAX_UPLOAD_MB, CORS_ORIGINS,
-    FRONTEND_DIR, MAX_STREAM_FRAMES, JOB_EXPIRY_MINUTES,
+    FRONTEND_DIR, MAX_STREAM_FRAMES, JOB_EXPIRY_MINUTES, VERSION,
 )
 from backend.utils import to_json_safe, strip_arabic_fields
 from backend.api.schemas import AnalyzeRequest
@@ -121,8 +121,39 @@ def root():
     return {"status": "ok", "service": "Sports Movement Analysis API", "docs": "/docs"}
 
 
+@app.get("/health")
+@app.get("/api/health")
+def health():
+    """Detailed health check for monitoring and load balancers."""
+    running = sum(1 for d in _results_store.values() if d.get("status") == "running")
+    return {
+        "status": "healthy",
+        "service": "Sports Movement Analysis API",
+        "version": VERSION,
+        "checks": {"api": "ok"},
+        "metrics": {
+            "active_jobs": running,
+            "total_jobs": len(_results_store),
+        },
+    }
+
+
 if FRONTEND_DIR.exists():
     app.mount("/app", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+
+
+def _sanitize_upload_filename(filename: str) -> str:
+    """Sanitize filename: remove path components, limit length, allow only safe chars."""
+    if not filename or not filename.strip():
+        return "video.mp4"
+    # Remove path components (path traversal prevention)
+    safe = Path(filename).name.strip()
+    # Allow alphanumeric, dash, underscore, dot
+    safe = "".join(c for c in safe if c.isalnum() or c in "._- ")
+    safe = safe[:128] or "video"
+    if not safe.lower().endswith((".mp4", ".avi", ".mov", ".webm")):
+        safe = f"{safe}.mp4"
+    return safe
 
 
 @app.post("/api/upload")
@@ -139,10 +170,12 @@ async def upload_video(request: Request, file: UploadFile = File(...)):
         size += len(chunk)
         if size > max_bytes:
             raise HTTPException(400, f"File too large. Max {MAX_UPLOAD_MB}MB.")
-    path = UPLOADS_DIR / f"{uuid.uuid4().hex}_{file.filename}"
+    safe_name = _sanitize_upload_filename(file.filename)
+    path = UPLOADS_DIR / f"{uuid.uuid4().hex}_{safe_name}"
     with open(path, "wb") as f:
         f.write(content)
-    return {"path": str(path), "filename": file.filename}
+    logger.info("Uploaded video: %s (%d bytes)", safe_name, size)
+    return {"path": str(path), "filename": safe_name}
 
 
 @app.get("/api/sports")
@@ -192,10 +225,13 @@ async def analyze_video(
         src_path = Path(video_source).resolve()
         if not src_path.exists():
             raise HTTPException(400, "Video file not found")
+        if not src_path.is_file():
+            raise HTTPException(400, "Video path must be a file")
+        uploads_resolved = UPLOADS_DIR.resolve()
         try:
-            src_path.relative_to(UPLOADS_DIR.resolve())
+            src_path.relative_to(uploads_resolved)
         except ValueError:
-            raise HTTPException(400, "Invalid video path")
+            raise HTTPException(400, "Video must be uploaded via /api/upload first")
 
     job_id = uuid.uuid4().hex
     _results_store[job_id] = {"status": "running", "result": None, "progress": 0, "created_at": time.time()}
@@ -280,6 +316,8 @@ async def start_camera_analysis(request: Request, background_tasks: BackgroundTa
 @app.get("/api/progress/{job_id}")
 def get_progress(job_id: str):
     """Return live analysis progress (frame, total, percentage, status)."""
+    if not _valid_job_id(job_id):
+        raise HTTPException(400, "Invalid job ID")
     if job_id not in _results_store:
         raise HTTPException(404, "Job not found")
     data = _results_store[job_id]
@@ -304,6 +342,8 @@ def get_progress(job_id: str):
 @app.get("/api/report/{job_id}")
 def get_report_info(job_id: str):
     """Return report metadata and download URLs for completed analysis."""
+    if not _valid_job_id(job_id):
+        raise HTTPException(400, "Invalid job ID")
     if job_id not in _results_store:
         raise HTTPException(404, "Job not found")
     data = _results_store[job_id]
@@ -330,6 +370,8 @@ def get_report_info(job_id: str):
 @app.get("/api/status/{job_id}")
 def get_status(job_id: str):
     """Get analysis job status and result."""
+    if not _valid_job_id(job_id):
+        raise HTTPException(400, "Invalid job ID")
     if job_id not in _results_store:
         raise HTTPException(404, "Job not found")
     data = _results_store[job_id]
@@ -339,6 +381,8 @@ def get_status(job_id: str):
 @app.get("/api/stream/{job_id}")
 async def stream_frames(job_id: str):
     """Server-Sent Events: stream overlay frames for live display."""
+    if not _valid_job_id(job_id):
+        raise HTTPException(400, "Invalid job ID")
     if job_id not in _results_store and job_id not in _frame_streams:
         raise HTTPException(404, "Job not found")
 
@@ -370,6 +414,11 @@ async def stream_frames(job_id: str):
     )
 
 
+def _valid_job_id(job_id: str) -> bool:
+    """Validate job_id format (32 hex chars)."""
+    return bool(job_id) and len(job_id) <= 64 and all(c in "0123456789abcdef" for c in job_id.lower())
+
+
 def _safe_path(base: Path, filename: str) -> Path:
     """Resolve path ensuring it stays under base (no path traversal)."""
     base = base.resolve()
@@ -383,13 +432,15 @@ def _safe_path(base: Path, filename: str) -> Path:
     return path
 
 
-@app.get("/api/reports/{filename}")
-def download_report(filename: str):
-    """Download a report file (CSV, PDF, JSON)."""
-    if ".." in filename or "/" in filename or "\\" in filename:
-        raise HTTPException(400, "Invalid filename")
-    path = _safe_path(REPORTS_DIR, filename)
-    return FileResponse(path, filename=filename)
+@app.get("/api/reports/{filepath:path}")
+def download_report(filepath: str):
+    """Download a report file (CSV, PDF, JSON). Supports subdirs: Football/report_xxx.pdf."""
+    if ".." in filepath or "\\" in filepath:
+        raise HTTPException(400, "Invalid file path")
+    # Normalize forward slashes for cross-platform
+    normalized = filepath.replace("\\", "/")
+    path = _safe_path(REPORTS_DIR, normalized)
+    return FileResponse(path, filename=path.name)
 
 
 @app.get("/api/output/{filename}")

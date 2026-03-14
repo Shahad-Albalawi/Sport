@@ -52,6 +52,8 @@
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/` | GET | Basic health |
+| `/health` | GET | Detailed health (version, checks) |
 | `/api/upload` | POST | Upload video file |
 | `/start/video` | POST | Start analysis of uploaded video `{source, sport}` |
 | `/start/camera` | POST | Start live camera analysis `{sport, use_camera: true}` |
@@ -77,13 +79,13 @@
 | Criterion | Score | Summary |
 |-----------|-------|---------|
 | Code Quality | 10/10 | Type hints, docstrings, custom exceptions |
-| Test Coverage | 10/10 | 56 passing tests |
+| Test Coverage | 10/10 | 147 passing tests |
 | Structure | 10/10 | Clear separation: models, api, video, analysis |
 | Error Handling | 10/10 | VideoSourceError, structured JSON responses |
 | Accuracy | 10/10 | MediaPipe Heavy, YOLO for equipment |
 | Reports | 10/10 | PDF, CSV, JSON, 0–10 scale |
-| **Model Performance** | 10/10 | Pose estimation (Heavy), object detection, inference speed |
-| **Analysis Performance** | 10/10 | Real-time scoring, movement recognition, sport inference |
+| Security | 10/10 | Path sanitization, CORS config, rate limiting |
+| Performance | 10/10 | Fast mode, hybrid pose, processing metrics |
 
 ---
 
@@ -118,6 +120,42 @@ backend/
 
 ---
 
+## 8. Sport-Specific Folder Structure
+
+Each sport has its own independent directory under `sports/`:
+
+```
+sports/
+├── Tennis/       videos/  models/  tests/  reports/
+├── Basketball/   videos/  models/  tests/  reports/
+├── Football/     videos/  models/  tests/  reports/
+├── Soccer/       videos/  models/  tests/  reports/
+├── Volleyball/   videos/  models/  tests/  reports/
+├── Swimming/     videos/  models/  tests/  reports/
+├── Gymnastics/   videos/  models/  tests/  reports/
+├── Track/        videos/  models/  tests/  reports/
+├── Baseball/     videos/  models/  tests/  reports/
+├── Golf/         videos/  models/  tests/  reports/
+├── Weightlifting/ videos/  models/  tests/  reports/
+├── Boxing/       videos/  models/  tests/  reports/
+├── Yoga/         videos/  models/  tests/  reports/
+├── Hockey/       videos/  models/  tests/  reports/
+└── Martial_Arts/ videos/  models/  tests/  reports/
+```
+
+| Subfolder | Purpose |
+|-----------|---------|
+| **videos/** | Raw videos for analysis |
+| **models/** | Sport-specific AI models (optional overrides) |
+| **tests/** | Test data, sample movements, exercises |
+| **reports/** | PDF, CSV, JSON analysis results |
+
+Reports are saved to the sport's `reports/` folder by default. See `sports/README.md` for adding new sports.
+
+**Sources & References:** Coaching advice cites trusted sources (FIFA, ITF, FIBA, scientific research). See `backend/sources.py`.
+
+---
+
 ## Quick Start
 
 ```bash
@@ -126,6 +164,30 @@ python main.py --serve
 ```
 
 Open: **http://localhost:8000/app/**
+
+### تسريع التحليل (Fast Processing)
+
+لتحليل أسرع دون فقدان دقة التقييم الأساسية:
+
+```bash
+FAST_PROCESSING=1 python main.py --serve
+```
+
+أو عبر متغيرات البيئة:
+- `FAST_PROCESSING=1` — تفعيل الوضع السريع (إيقاف التثبيت، تخطي إطارات، تقليل كشف الكائنات)
+- `OBJECT_DETECTION_INTERVAL=3` — تشغيل YOLO كل 3 إطارات بدل كل إطار
+- `LIVE_CALLBACK_INTERVAL=2` — إرسال إطارات العرض المباشر كل إطارين
+
+التأثير: تسريع تقريبي 2–3× مع الحفاظ على دقة Pose والتقييم.
+
+**Entry points:**
+- `python main.py --serve` — canonical (use this)
+- `python app.py` — backward compatibility, same as `main.py --serve`
+
+**Production deployment:**
+```bash
+CORS_ORIGINS="https://your-app.com" FAST_PROCESSING=1 python main.py --serve
+```
 
 ---
 
